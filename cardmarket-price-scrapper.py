@@ -1,15 +1,15 @@
 # Remerciements à Thomas pour son aide dans la réalisation de ce script.
 # Cimer chef
 
+# Install dependencies first:
+# pip install selenium python-dotenv google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client openpyxl seleniumbase
+
 import os
 from dotenv import load_dotenv
-from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from seleniumbase import SB
 import json
 import sys
 import time
@@ -145,7 +145,6 @@ class SpreadsheetHandler:
             except Exception:
                 pass
 
-# Rest of the functions remain the same
 def get_sheets_credentials():
     try:
         with open('secrets.json', 'r') as f:
@@ -206,15 +205,15 @@ def login_to_platform(driver, cardmarket_username, cardmarket_password):
         print(f"Erreur lors de la connexion a Cardmarket : {str(e)}")
         sys.exit(1)
 
-def get_prices_from_page(driver, url):
+#Using SeleniumBase
+def get_prices_from_page_sb(sb, url):
+
     if not url or url.isspace():
         return Prix(0, 0, 0)
     try:
-        driver.get(url)
-        driver.implicitly_wait(10)
-
-        elements_first_class = driver.find_elements(By.CLASS_NAME, "color-primary.small.text-end.text-nowrap.fw-bold")
-        elements_second_class = driver.find_elements(By.CLASS_NAME, "ms-1")
+        # URL is already opened by uc_open_with_reconnect
+        elements_first_class = sb.find_elements(".color-primary.small.text-end.text-nowrap.fw-bold")
+        elements_second_class = sb.find_elements(".ms-1")
 
         if not elements_first_class:
             return Prix(0, 0, 0)
@@ -242,76 +241,58 @@ def get_prices_from_page(driver, url):
 
 def main():
     spreadsheet = SpreadsheetHandler()
-    driver = None
 
     try:
-        chrome_options = Options()
-        chrome_options.add_argument("--log-level=3")
-        chrome_options.add_argument("--disable-logging")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-usb")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        prefs = {
-            'profile.default_content_setting_values': {
-                'notifications': 2,
-                'automatic_downloads': 1
-            },
-            'profile.default_content_settings': {
-                'popups': 2
-            },
-            'credentials_enable_service': False,
-            'profile.password_manager_enabled': False
-        }
-        chrome_options.add_experimental_option('prefs', prefs)
-        
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-
-        cardmarket_username, cardmarket_password = get_cardmarket_credentials()
-        login_to_platform(driver, cardmarket_username, cardmarket_password)
-
-        urls = spreadsheet.get_urls()
-
-        for url_data in urls:
-            row_number = url_data['row']
-            url = url_data['url']
+        with SB(uc=True, headless=False) as sb:
+            # Login to Cardmarket
+            login_url = "https://www.cardmarket.com/en/Pokemon/Login"
+            sb.uc_open_with_reconnect(login_url, reconnect_time=4)
             
-            print(f"Traitement de la ligne {row_number}...")
+            cardmarket_username, cardmarket_password = get_cardmarket_credentials()
             
-            try:
-                if url is None:
-                    values = [0, 0, 0]
-                    spreadsheet.update_values(values, row_number)
-                    print(f"Ligne {row_number} vide: Prix mis à 0")
-                else:
-                    price_info = get_prices_from_page(driver, url)
-                    values = [price_info.purchase_price, price_info.shipping_price, price_info.total_price]
-                    spreadsheet.update_values(values, row_number)
-                    print(f"Ligne {row_number} completee: Prix d'achat={price_info.purchase_price}€, "
-                          f"Frais de port={price_info.shipping_price}€, Total={price_info.total_price}€")
-        
-                if SHEETS_OR_EXCEL == 'SHEETS':
-                    time.sleep(1.5)
-        
-            except KeyboardInterrupt:
-                print("\nInterruption manuelle détectée. Sauvegarde de l'état actuel...")
-                break
-            except Exception as e:
-                print(f"Erreur lors du traitement de la ligne {row_number}: {e}")
-                continue
+            # Find and fill login form
+            sb.type('input[type="text"]', cardmarket_username)
+            sb.type('input[type="password"]', cardmarket_password)
+            sb.click('input[type="submit"]')
+            
+            time.sleep(3)
 
-        print("Le processus s'est terminé!")
+            urls = spreadsheet.get_urls()
+
+            for url_data in urls:
+                row_number = url_data['row']
+                url = url_data['url']
+                
+                print(f"Traitement de la ligne {row_number}...")
+                
+                try:
+                    if url is None:
+                        values = [0, 0, 0]
+                        spreadsheet.update_values(values, row_number)
+                        print(f"Ligne {row_number} vide: Prix mis à 0")
+                    else:
+                        # Open URL with reconnect to handle Cloudflare
+                        sb.uc_open_with_reconnect(url, reconnect_time=3)
+                        
+                        # Get prices using SeleniumBase methods
+                        price_info = get_prices_from_page_sb(sb, url)
+                        values = [price_info.purchase_price, price_info.shipping_price, price_info.total_price]
+                        spreadsheet.update_values(values, row_number)
+                        print(f"Ligne {row_number} completee: Prix d'achat={price_info.purchase_price}€, "
+                              f"Frais de port={price_info.shipping_price}€, Total={price_info.total_price}€")
+            
+                    time.sleep(2)
+            
+                except KeyboardInterrupt:
+                    print("\nInterruption manuelle détectée. Sauvegarde de l'état actuel...")
+                    break
+                except Exception as e:
+                    print(f"Erreur lors du traitement de la ligne {row_number}: {e}")
+                    continue
+
+            print("Le processus s'est terminé!")
 
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         try:
             spreadsheet.cleanup()
         except Exception:
